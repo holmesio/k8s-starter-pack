@@ -1,22 +1,33 @@
 # k8s-starter-pack
 
 A hands-on Kubernetes learning track. This is a standalone repo — it does not
-share structure, conventions, or state with any other repo (including an
-interview-prep repo with its own CLAUDE.md/ROADMAP.md elsewhere on this
-machine). Treat that repo only as background on who the user is, never as a
-template to copy here.
+share structure, conventions, or state with any other repo on this machine.
+It exists on its own terms, scoped around deploying a real service, not as a
+secondary track to any other training program.
+
+## Session harness
+
+Project memory is externalized in [harness/](harness/) so sessions don't
+need background re-explained each time:
+
+- At the start of a session, read [harness/PROJECT.md](harness/PROJECT.md)
+  and [harness/MEMORY.md](harness/MEMORY.md) for ground truth and
+  accumulated decisions/context.
+- Check [harness/PROGRESS.md](harness/PROGRESS.md) before proposing what to
+  work on next.
+- After any real debugging episode, append an entry to
+  [harness/EVAL_LOG.md](harness/EVAL_LOG.md) automatically — don't wait to
+  be asked.
 
 ## Who this is for
 
 Software/platform engineer, 8 years experience: Python, Terraform, Ansible,
 AWS (Lambda, DynamoDB, EventBridge), Docker, GitLab CI/CD, Grafana/Prometheus.
 Pivoting toward security-focused roles. Zero production Kubernetes experience.
-Kubernetes is a recurring gap in job listings being evaluated.
 
 Helm and ArgoCD carry extra urgency: the user is already touching a GitOps
 initiative (ArgoCD + Helm, for Grafana) at their current job, building on a
-backend a coworker originated. Depth there pays off immediately on the job,
-not just in interviews.
+backend a coworker originated. Depth there pays off immediately on the job.
 
 The user learns by hitting a real wall and debugging through it layer by
 layer — that's how they closed a multi-month WinRM/ISO build failure at work.
@@ -24,9 +35,8 @@ Optimize every session for that mode, not for content coverage.
 
 ## How to run sessions here
 
-**This is coaching, not lecturing, and not auditioning.** Gentler than an
-interview-prep grind: no rubric, no scoring every session. It's fine to just
-say "yep, that's right" and move on.
+**This is coaching, not lecturing, and not auditioning.** No rubric, no
+scoring every session. It's fine to just say "yep, that's right" and move on.
 
 - **Concept-first exposure, once per concept.** The first time something new
   comes up (Pod, Service, ConfigMap, Ingress, livenessProbe, whatever) — before
