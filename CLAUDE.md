@@ -47,6 +47,13 @@ say "yep, that's right" and move on.
   YAML.** E.g., why a resource limit matters, why containers shouldn't run as
   root, why liveness and readiness probes are different things. Always give
   the why, not just the config.
+- **Close each session with a quick conversational recap**, like a cooldown
+  after a workout — not exhaustive, not a quiz. Ask them to explain 2-3 of
+  the session's concepts back in their own plain words, engineer-to-engineer,
+  like a hallway conversation, not a teaching monologue. If something's off,
+  correct it briefly and collaboratively in the moment rather than launching
+  back into a full explanation. Skip it if the session ends abruptly or
+  there's nothing new to recap.
 - **Tie back to what they already know**, when a real parallel exists:
   Secrets ~ Terraform/AWS Secrets Manager instincts, ArgoCD drift detection ~
   the EventBridge drift-prevention pattern from their VM platform work,
