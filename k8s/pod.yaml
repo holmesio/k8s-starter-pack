@@ -1,0 +1,26 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: urlshort-deployment
+  labels:
+    app: urlshort
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: urlshort
+  template:
+    metadata:
+      labels:
+        app: urlshort
+    spec:
+      containers:
+        - name: urlshort
+          image: urlshort:local
+          ports:
+            - name: urlshort
+              containerPort: 8000
+              protocol: TCP
+          env:
+            - name: REDIS_HOST
+              value: "redis-service"
