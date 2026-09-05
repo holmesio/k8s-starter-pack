@@ -63,7 +63,6 @@ def healthz():
 def readyz():
     try:
         is_connected = r.ping()
-        print(f"Connected to Redis: {is_connected}")
     except redis.RedisError:
         raise HTTPException(status_code=503)
 
