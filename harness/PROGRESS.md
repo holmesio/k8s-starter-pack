@@ -30,6 +30,15 @@ summarizes status without re-deriving that history.
 - [x] Service (NodePort) — 2026-09-03. `urlshort` exposed externally via
       `k8s/urlshort-service.yaml`; full shorten → redirect → stats loop
       verified end-to-end against `<node-ip>:<nodePort>`.
+- [x] ConfigMap — 2026-09-04. `REDIS_HOST`/`REDIS_PORT` externalized from
+      the Deployment's hardcoded `env` into `k8s/urlshort-configmap.yaml`,
+      referenced via `configMapKeyRef`. Debugged a self-introduced typo
+      (`REDIS_PORT: "6739"`) down to the fix, which surfaced the real
+      concept: ConfigMap-sourced env vars resolve once at container start
+      and don't live-reload — editing the ConfigMap alone didn't fix
+      anything until pods were recreated. `kubectl rollout restart` named
+      as the idiomatic tool for that going forward (over manual delete or
+      scale-to-0-and-back, which is what was actually used this time).
 
 ## In progress / not started
 
@@ -40,9 +49,10 @@ summarizes status without re-deriving that history.
 - [ ] Deployment rollouts specifically (rolling update on a spec change,
       rollback) — replica self-healing done, rollout behavior still open.
 - [ ] Service — LoadBalancer type still open (ClusterIP and NodePort done).
-- [ ] ConfigMap — not started. Planned next: externalize `REDIS_HOST` (and
-      similar) out of the Deployment spec's hardcoded `env`.
-- [ ] Secret — not started.
+- [ ] Secret — not started. Nothing in `urlshort` is actually sensitive yet
+      (just `REDIS_HOST`/`REDIS_PORT`, now in a ConfigMap); would need an
+      invented scenario (e.g. an admin API key) to make this real rather
+      than mechanical.
 - [ ] Resource requests/limits — not started.
 - [ ] livenessProbe / readinessProbe (and why they differ) — not started.
 - [ ] In-cluster DNS / service discovery beyond the single Service case

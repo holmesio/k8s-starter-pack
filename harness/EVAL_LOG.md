@@ -78,3 +78,43 @@ shorten → redirect → stats loop from outside the cluster.
 numbers in play — `targetPort` (container), `port` (cluster-internal
 Service port), and `nodePort` (external, cluster-wide) — and mixing them up
 is a common, easy-to-make misconfiguration.
+
+---
+
+## 2026-09-04 - ConfigMap typo (`REDIS_PORT: "6739"`) causing connection refused
+
+**What broke:** After externalizing `REDIS_HOST`/`REDIS_PORT` into a new
+`k8s/urlshort-configmap.yaml` ConfigMap and wiring the Deployment
+(`k8s/urlshort-deployment.yaml`) to pull both via `configMapKeyRef`, curling the
+app through `kubectl port-forward deployment/urlshort-deployment 8000:8000`
+returned connection refused / hung.
+**Error/symptom:** Pods were `Running`/`Ready`; `kubectl logs` showed no
+clear error. `kubectl describe pod` showed the env entries only as
+unresolved references (`<set to the key 'REDIS_PORT' of config map
+'urlshort-config'> Optional: false`) — describe does not resolve
+`configMapKeyRef` to its actual value, so it looked "fine" at a glance.
+**Diagnosis path:** `describe` being a dead end here was itself the key
+lesson. Moved to `kubectl exec <pod> -- env | grep REDIS`, which printed
+both the ConfigMap-sourced vars (`REDIS_PORT=6739`) and Kubernetes'
+auto-injected Service-discovery vars for the same Redis Service
+(`REDIS_SERVICE_SERVICE_PORT=6379`, `REDIS_SERVICE_PORT_6379_TCP_PORT=6379`).
+Comparing the two side by side surfaced the mismatch — `6739` vs `6379` —
+i.e. a fat-fingered ConfigMap value, not a wiring problem.
+**Fix:** Corrected `REDIS_PORT` to `"6379"` in `k8s/urlshort-configmap.yaml`
+and reapplied. Existing pods did *not* pick up the new value on their own —
+editing/reapplying the ConfigMap object doesn't touch already-running
+containers. Pods were deleted and recreated by the ReplicaSet to pick up
+the corrected env var.
+**Concept this reinforced:** (1) `kubectl describe pod` shows the
+*reference* for `valueFrom`/`configMapKeyRef` env vars, never the resolved
+value — `exec ... env` (or `describe configmap`) is the way to see ground
+truth. (2) ConfigMap-sourced env vars are resolved once, at container
+start, and are never live-reloaded; changing the ConfigMap requires forcing
+pod recreation to take effect (`kubectl rollout restart deployment/...` is
+the idiomatic way — respects the rolling-update strategy — versus the
+manual delete-and-recreate used this time, which briefly drops all
+replicas). (3) Kubernetes auto-injects `<SVCNAME>_SERVICE_HOST`/`_PORT`
+(and related `_TCP_*`) env vars into every pod for every Service that
+existed at pod start — a second, legacy service-discovery mechanism
+alongside cluster DNS, and incidentally useful here as a ground-truth
+value to diff a suspected-wrong config against.

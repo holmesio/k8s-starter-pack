@@ -23,4 +23,17 @@ spec:
               protocol: TCP
           env:
             - name: REDIS_HOST
-              value: "redis-service"
+              valueFrom:
+                configMapKeyRef:
+                  name: urlshort-configmap
+                  key: REDIS_HOST
+            - name: REDIS_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: urlshort-configmap
+                  key: REDIS_PORT
+          resources:
+            limits:
+              memory: "128Mi"
+            requests:
+              memory: "64Mi"

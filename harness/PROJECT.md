@@ -77,15 +77,18 @@ just the current shape of the deployed system.)
   `k8s-starter` in the README/PROGRESS.md.
 - App image `urlshort:local`, built from `app/Dockerfile`, loaded into the
   kind cluster with `kind load docker-image`.
-- `urlshort` runs as a 3-replica Deployment (`k8s/pod.yaml` — note: file is
-  named `pod.yaml` but its contents were converted to a `Deployment` object
-  named `urlshort-deployment`; the filename hasn't been renamed to match).
+- `urlshort` runs as a 3-replica Deployment (`k8s/urlshort-deployment.yaml` —
+  renamed from `pod.yaml` on 2026-09-04 to match its actual contents,
+  `Deployment` object `urlshort-deployment`).
 - Redis runs as a bare Pod (`k8s/redis-pod.yaml`), fronted by a ClusterIP
   Service (`k8s/redis-service.yaml`) that `urlshort` reaches via
   `REDIS_HOST=redis-service` (cluster DNS, no hardcoded IP).
 - `urlshort` is exposed outside the cluster via a NodePort Service
   (`k8s/urlshort-service.yaml`).
 - Full shorten → redirect → stats loop verified end-to-end externally.
-- Config (`REDIS_HOST` etc.) is still a hardcoded env var in the Deployment
-  spec — ConfigMap/Secret extraction is the next planned step per
-  `PROGRESS.md`.
+- `REDIS_HOST`/`REDIS_PORT` are externalized into a ConfigMap
+  (`k8s/urlshort-configmap.yaml`), referenced from the Deployment via
+  `configMapKeyRef`. Secret extraction is still open — nothing in the app
+  is actually sensitive yet, so that'll need an invented scenario (e.g. an
+  admin API key) to be a real exercise rather than a mechanical repeat of
+  the ConfigMap pattern.

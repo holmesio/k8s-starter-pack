@@ -51,14 +51,35 @@ cluster. LoadBalancer is explicitly still on the open concept list
 works locally" choice rather than a final decision on Service types.
 **Confidence:** Inferred.
 
-## Filename/content drift: `k8s/pod.yaml` now holds a Deployment
+## Filename/content drift: `k8s/pod.yaml` now holds a Deployment (resolved)
 
-**Note, not a decision:** `k8s/pod.yaml` was edited in place to become a
-`Deployment` (`urlshort-deployment`, 3 replicas) rather than being
-renamed or replaced by a new file. The filename hasn't been updated to
-match. Flagging so a future session doesn't assume the file's name
-describes its current contents.
+**Note, historical:** `k8s/pod.yaml` was edited in place to become a
+`Deployment` (`urlshort-deployment`, 3 replicas) without being renamed.
+**Resolved 2026-09-04:** file renamed to `k8s/urlshort-deployment.yaml` when the
+ConfigMap work touched it anyway. No longer a live discrepancy — kept here
+only as a record that the rename happened and why the name changed.
 **Confidence:** Confirmed (read directly from the file).
+
+## ConfigMap introduced for `REDIS_HOST`/`REDIS_PORT`
+
+**Decision:** Externalized `REDIS_HOST`/`REDIS_PORT` from the Deployment's
+hardcoded `env` into `k8s/urlshort-configmap.yaml`, referenced via
+`configMapKeyRef`.
+**Why:** Direct next step per `PROGRESS.md` — keep config separate from the
+workload spec so it isn't tied to the Deployment's lifecycle.
+**Debugging episode:** Introduced a typo, `REDIS_PORT: "6739"` instead of
+`"6379"`. `kubectl describe pod` doesn't resolve `configMapKeyRef` values
+(only shows the reference); the fix came from `kubectl exec ... -- env`
+compared against Kubernetes' auto-injected `<SVCNAME>_SERVICE_PORT` env
+vars (which reflect the real Service, not the ConfigMap) as a ground-truth
+check. See [EVAL_LOG.md](EVAL_LOG.md) for the full episode.
+**Concept landed:** ConfigMap-sourced env vars resolve once at container
+start and are never live-reloaded. Editing the ConfigMap object alone did
+nothing to already-running pods — they had to be recreated (this session
+did it via manual delete; `kubectl rollout restart deployment/...` was
+named as the more idiomatic tool going forward, since it respects the
+rolling-update strategy instead of dropping to zero available pods).
+**Confidence:** Confirmed (this session).
 
 ---
 
