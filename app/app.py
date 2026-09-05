@@ -12,7 +12,7 @@ REDIS_HOST = os.environ.get("REDIS_HOST", "localhost")
 REDIS_PORT = int(os.environ.get("REDIS_PORT", "6379"))
 
 app = FastAPI()
-r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
+r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True, socket_connect_timeout=3, socket_timeout=5)
 
 REQUEST_COUNT = Counter(
     "http_requests_total", "Total HTTP requests", ["endpoint", "method", "status"]
@@ -57,6 +57,16 @@ def stats(code: str):
 @app.get("/healthz")
 def healthz():
     return {"status": "ok"}
+
+
+@app.get("/readyz")
+def readyz():
+    try:
+        is_connected = r.ping()
+        print(f"Connected to Redis: {is_connected}")
+    except redis.RedisError:
+        raise HTTPException(status_code=503)
+
 
 
 @app.get("/metrics")

@@ -39,13 +39,40 @@ summarizes status without re-deriving that history.
       anything until pods were recreated. `kubectl rollout restart` named
       as the idiomatic tool for that going forward (over manual delete or
       scale-to-0-and-back, which is what was actually used this time).
+- [x] Resource requests/limits — 2026-09-05. `k8s/urlshort-deployment.yaml`
+      carries memory (`128Mi`/`64Mi`) and CPU (`250m`/`100m`) requests and
+      limits. CPU throttling actually provoked and felt: a scratch load
+      script against `/shorten` plus `/sys/fs/cgroup/cpu.stat` before/after
+      showed `nr_throttled` roughly doubling and ~522ms of real throttled
+      time over a ~2s run. Landed the concept that CPU limits throttle
+      (process slows, keeps running) where memory limits OOMKill (process
+      dies) — distinct failure modes. Memory OOMKill itself not separately
+      provoked yet (open, not blocking). See
+      [MEMORY.md](MEMORY.md#resource-requestslimits--cpu-throttling-demonstrated-memory-oomkill-not-yet)
+      and [EVAL_LOG.md](EVAL_LOG.md).
+- [x] livenessProbe / readinessProbe (and why they differ) — 2026-09-05.
+      Added `/healthz` (liveness) and a new `/readyz` (readiness, real
+      `redis.Redis().ping()` check) to `app/app.py`, wired into
+      `k8s/urlshort-deployment.yaml`. Landed the design principle live:
+      liveness triggers a disruptive restart so it stays narrow/lenient
+      and never checks downstream deps; readiness gates traffic routing
+      (cheap, reversible) so it's the one allowed to depend on Redis, and
+      should react fast. First draft got the timing backwards (readiness
+      slower than liveness) and was corrected. Felt for real via a genuine
+      failure: after wiring the probes, `urlshort` pods stuck at `0/1
+      Ready` — turned out to be a stale local `urlshort:local` image
+      (`imagePullPolicy: IfNotPresent` reusing a cached image that
+      predated `/readyz`), diagnosed via a `404` in `kubectl describe`
+      events down to the `docker build` → `kind load docker-image` →
+      `kubectl rollout restart` loop. Full detail across three entries in
+      [EVAL_LOG.md](EVAL_LOG.md).
 
 ## In progress / not started
 
 - [ ] kubectl debugging (`describe`, `logs`, events) under a real failure —
-      touched lightly (read a 500 back to a connection-refused in `logs`),
-      not yet forced by an actual crash/misconfig as its own focused
-      exercise.
+      touched lightly (read a 500 back to a connection-refused in `logs`;
+      also the 404-on-readiness-probe episode above), not yet forced by an
+      actual crash/misconfig as its own focused exercise.
 - [ ] Deployment rollouts specifically (rolling update on a spec change,
       rollback) — replica self-healing done, rollout behavior still open.
 - [ ] Service — LoadBalancer type still open (ClusterIP and NodePort done).
@@ -53,8 +80,6 @@ summarizes status without re-deriving that history.
       (just `REDIS_HOST`/`REDIS_PORT`, now in a ConfigMap); would need an
       invented scenario (e.g. an admin API key) to make this real rather
       than mechanical.
-- [ ] Resource requests/limits — not started.
-- [ ] livenessProbe / readinessProbe (and why they differ) — not started.
 - [ ] In-cluster DNS / service discovery beyond the single Service case
       already covered — not started (multi-service networking, deliberately
       broken config to debug).

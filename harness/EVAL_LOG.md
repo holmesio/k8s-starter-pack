@@ -118,3 +118,139 @@ replicas). (3) Kubernetes auto-injects `<SVCNAME>_SERVICE_HOST`/`_PORT`
 existed at pod start — a second, legacy service-discovery mechanism
 alongside cluster DNS, and incidentally useful here as a ground-truth
 value to diff a suspected-wrong config against.
+
+---
+
+## 2026-09-05 - CPU throttling under load at `cpu: limits: 250m`
+
+**What we tested:** `k8s/urlshort-deployment.yaml` already carried
+`resources.limits.cpu: 250m` / `requests.cpu: 100m` (added same session,
+alongside the earlier memory limits). Wanted to confirm the limit actually
+throttles under load rather than just trusting the YAML — CPU limits fail
+differently from memory limits (throttled, not OOMKilled), so the failure
+mode needed to be observed directly, not inferred.
+**Method:** No `metrics-server` in this kind cluster, so `kubectl top pod`
+wasn't available, and no load-test binary (`hey`/`ab`/`wrk`) was installed
+either. Wrote a small `xargs -P 30` + `curl` script (scratchpad, not
+committed) firing 1000 concurrent `POST /shorten` requests at the NodePort
+Service — chosen over `/healthz` because it round-trips to Redis and does
+real per-request work. Captured `/sys/fs/cgroup/cpu.stat` inside a pod via
+`kubectl exec` before and after the run as the ground-truth signal, since
+it's the kernel's own throttling counters rather than a derived metric.
+**Result:** One replica's `cpu.stat` went from `nr_periods 457 /
+nr_throttled 13 / throttled_usec 900373` to `510 / 26 / 1422203` over the
+~2s test — i.e. of the ~53 scheduling periods (100ms each) that occurred
+during the run, roughly 13 hit the 250m quota and got throttled, adding
+up to ~522ms of actual throttled time. All 3 replicas showed the same
+pattern. Request latencies from `curl` stayed modest (30-80ms) — the
+throttling was real and measurable at the kernel level, but not dramatic
+enough to be obvious from client-side latency alone at this concurrency.
+**Concept this confirmed:** A CPU `limit` doesn't kill the container the
+way a memory limit does — the kernel's CFS bandwidth controller just
+withholds CPU time once the cgroup exceeds its quota within a scheduling
+period, so the process keeps running, just slower. `nr_throttled` /
+`throttled_usec` in `cpu.stat` are the direct evidence of this happening,
+and are worth reaching for over `kubectl top` (which shows usage, not
+throttling) or raw client latency (which can under-represent it) when
+confirming a CPU limit is actually binding.
+
+---
+
+## 2026-09-05 - Readiness probe stuck failing (404) after adding `/readyz`
+
+**What broke:** Added `livenessProbe` (`/healthz`) and `readinessProbe`
+(`/readyz`) to `k8s/urlshort-deployment.yaml`, plus a new `/readyz` route in
+`app/app.py` that pings Redis. After applying, `urlshort` pods stayed
+`Running` but `0/1 Ready` indefinitely. First hypothesis tested (by the
+user): a stale Redis connection — deleted and reapplied the Redis pod.
+Readiness stayed failed regardless.
+**Error/symptom:** `kubectl describe pod` on an `urlshort` pod showed
+`Warning  Unhealthy ... Readiness probe failed: HTTP probe failed with
+statuscode: 404` — repeating on every probe interval, no restarts (liveness
+was passing fine throughout, since `/healthz` did exist).
+**Diagnosis path:** The 404 (not a connection error/timeout) was the key
+detail — it meant the request was reaching the container fine, but the
+route itself wasn't there, which pointed away from Redis/networking
+entirely. `kubectl describe pod` also showed `Container image
+"urlshort:local" already present on machine and can be accessed by the
+pod` on Pulled — i.e. kubelet reused a cached local image rather than
+fetching anything new. Confirmed: the running container predated the
+`/readyz` route being added to `app.py` — it had simply never been rebuilt
+into the image.
+**Fix:** `docker build -t urlshort:local app/` → `kind load docker-image
+urlshort:local --name k8s-starter` → `kubectl rollout restart
+deployment/urlshort-deployment`. All three steps were necessary: build
+alone doesn't reach the `kind` node's containerd, load alone doesn't touch
+already-running pods, and restart alone (without a rebuild/reload first)
+would've just recreated pods against the same stale image.
+**Concept this reinforced:** With a non-`:latest` tag (`urlshort:local`),
+`imagePullPolicy` defaults to `IfNotPresent` — kubelet will happily keep
+using whatever image already sits under that tag on the node and never
+notices a rebuild on the host. `docker build` → `kind load docker-image` →
+force pod recreation (`rollout restart`, since the Deployment spec itself
+didn't change) is the full loop required to actually run new code in this
+local-cluster setup — a gap that's easy to hit repeatedly until it's
+internalized. Also: an HTTP 404 on a probe is a distinct, meaningful signal
+from a connection error/timeout — it says "I reached the app, the route
+just isn't there" and should redirect diagnosis away from
+networking/dependency theories entirely.
+
+---
+
+## 2026-09-05 - `/readyz` implementation bugs caught in review before deploy
+
+**What we caught:** Reviewing the first draft of `/readyz` in `app/app.py`
+before it was wired into the readinessProbe surfaced three separate
+issues, none of which would have been obvious from `kubectl` output alone:
+(1) it returned bare `200`/`-1` values from the FastAPI handler, which
+FastAPI serializes as the JSON *body* — the actual HTTP status stayed `200`
+in both branches, so a probe reading it would never have detected a
+failure at all; (2) it used the third-party `ping3` library to ICMP-ping
+`f"{REDIS_HOST}:{REDIS_PORT}"` (a malformed target for ICMP, and ICMP also
+needs `CAP_NET_RAW`, which containers often lack) rather than checking
+whether Redis itself was actually responding; (3) the new `ping3`
+dependency was added to `pyproject.toml`/`uv.lock` but never to
+`requirements.txt`, which is what `Dockerfile` actually installs from — so
+the built image would have `ImportError`ed on startup regardless of (1)
+and (2).
+**Fix:** Rewrote `/readyz` to call the existing `redis.Redis` client's own
+`.ping()` (real Redis-protocol check) and `raise HTTPException(status_code=
+503)` on `redis.RedisError` (broadened from `ConnectionError` to also catch
+`TimeoutError`, a sibling exception in redis-py's hierarchy, not a
+subclass). Added `socket_connect_timeout`/`socket_timeout` to the Redis
+client so the endpoint fails fast rather than hanging past what the probe's
+own `timeoutSeconds` would otherwise silently absorb. `ping3` dependency
+dropped entirely rather than reconciled into `requirements.txt`.
+**Concept this reinforced:** A probe endpoint's correctness lives or dies
+on details that are invisible from the YAML side — an HTTP handler
+returning a value isn't the same as setting a status code, and a
+Kubernetes probe only ever looks at the status code. Also surfaced the
+liveness/readiness design principle concretely: liveness triggers a
+disruptive restart, so it should stay narrow/self-contained (never check
+downstream dependencies, or an outage in one dependency restart-loops every
+consumer of it); readiness gates traffic routing, which is cheap and
+reversible, so it's the one allowed — even expected — to depend on the
+outside world.
+
+---
+
+## 2026-09-05 - Readiness probe timing set backwards from its own design goal
+
+**What we caught:** First draft of the readiness/liveness probe timing had
+readiness *slower* to react than liveness — `periodSeconds: 10` /
+`failureThreshold: 3` (~30-40s to detect a failure) versus liveness's
+`periodSeconds: 5` / `failureThreshold: 5` (~25-35s). That's backwards:
+liveness failures trigger a disruptive restart and should stay lenient;
+readiness failures just pull a pod from Service rotation (cheap,
+reversible) and should react fast, since every second of delay there is
+live user traffic being routed to a pod that can't serve it.
+**Fix:** Readiness tightened to `initialDelaySeconds: 3` /
+`periodSeconds: 1` / `failureThreshold: 3` (~3s to detect and pull from
+rotation), liveness left as the more forgiving of the two.
+**Concept this reinforced:** Probe *values* need to reflect the asymmetric
+cost of what each probe triggers, not just be "reasonable-looking numbers"
+independently. Flagged as a separate, real tradeoff worth keeping in mind:
+`periodSeconds: 1` is also a permanent steady-state cost (a real Redis
+round-trip every second, forever, × replica count), not just a detection
+window — worth revisiting if this were headed to a real deployment rather
+than a local learning exercise.

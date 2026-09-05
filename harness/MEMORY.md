@@ -7,6 +7,42 @@ Each entry: **Decision**, **Why**, **Tried/abandoned** (if applicable),
 
 ---
 
+## Resource requests/limits — CPU throttling demonstrated, memory OOMKill not yet
+
+**Decision:** `k8s/urlshort-deployment.yaml` now carries both memory
+(`limits.memory: 128Mi` / `requests.memory: 64Mi`, added earlier same
+session) and CPU (`limits.cpu: 250m` / `requests.cpu: 100m`) resources.
+**Why:** Direct next step per `PROGRESS.md`. CPU limits were picked over a
+larger value specifically so throttling would be reachable with a modest
+load test, since CPU limits fail differently from memory limits (throttled
+via the kernel's CFS bandwidth controller, not OOMKilled) and that
+difference needed to be felt, not just described.
+**Debugging/demo episode:** No `metrics-server` in this `kind` cluster
+(`kubectl top pod` unavailable) and no load-test binary installed, so used
+a scratch `xargs -P 30` + `curl` script hammering `POST /shorten` through
+the NodePort Service, and read `/sys/fs/cgroup/cpu.stat` inside a pod
+before/after via `kubectl exec` as ground truth. `nr_throttled` roughly
+doubled and `throttled_usec` climbed ~522ms over a ~2s run — real,
+measurable throttling. See [EVAL_LOG.md](EVAL_LOG.md) for the full episode.
+**Concept landed:** CPU limit → throttled (process keeps running, slower);
+memory limit → OOMKilled (process dies). Client-observed latency stayed
+modest (30-80ms) despite clear throttling at the cgroup level — partly
+because the NodePort Service spread the 1000-request load across all 3
+replicas (kube-proxy round-robin), and partly because this app's per-request
+work is mostly I/O-bound (waiting on the Redis round-trip, which doesn't
+count against the CPU quota) rather than CPU-bound — throttling can only
+delay the small CPU-bound slice of each request.
+**Open thread:** The user flagged wanting a general refresher on CPU
+scheduling / latency fundamentals (why I/O-wait doesn't count against a
+CPU quota, why throttling doesn't show up 1:1 in latency) — self-directed,
+not something to re-teach unprompted next session, but worth being aware
+of if CPU-bound explanations come up again (e.g. HPA later). Also: an
+actual memory OOMKill has still not been provoked directly (only inferred
+from the limit being set) — worth doing if a natural scenario arises,
+though not currently treated as blocking the resource-limits concept being
+considered landed.
+**Confidence:** Confirmed (this session).
+
 ## `kind` as the local cluster tool
 
 **Decision:** Use `kind` for the local cluster, not `minikube`.

@@ -21,6 +21,22 @@ spec:
             - name: urlshort
               containerPort: 8000
               protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            failureThreshold: 5
+            successThreshold: 1
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8000
+            initialDelaySeconds: 3
+            periodSeconds: 5
+            failureThreshold: 3
+            successThreshold: 1
           env:
             - name: REDIS_HOST
               valueFrom:
@@ -35,5 +51,7 @@ spec:
           resources:
             limits:
               memory: "128Mi"
+              cpu: "250m"
             requests:
               memory: "64Mi"
+              cpu: "100m"
