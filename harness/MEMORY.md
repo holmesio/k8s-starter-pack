@@ -7,6 +7,32 @@ Each entry: **Decision**, **Why**, **Tried/abandoned** (if applicable),
 
 ---
 
+## Deployment rollouts covered; mutable `urlshort:local` tag is now a known landmine
+
+**Decision / what landed (2026-09-06):** Deployment rollouts done as a
+concept — rolling-update strategy (`maxSurge`/`maxUnavailable`, 25% defaults
+→ `1`/`0` at `replicas: 3`), `kubectl rollout status`/`history`/`undo`,
+`kubernetes.io/change-cause`, `progressDeadlineSeconds`, and the safety
+property that a readiness probe makes a bad rollout *wedge* (old pods keep
+serving) instead of taking the service down. A deliberately-broken `/readyz`
+(always 503) was shipped to feel the wedge, then recovered with `rollout
+undo`. Full episodes in [EVAL_LOG.md](EVAL_LOG.md).
+**Recurring theme, now explicit:** the single mutable image tag
+`urlshort:local` (rebuilt + `kind load`ed in place every change) has now
+bitten twice — the 2026-09-05 stale-image `/readyz` 404, and 2026-09-06's
+"`rollout undo` restores the pod template but every revision's template
+names the same moving tag, so it can't actually restore old code." The
+app is not yet on immutable tags. Worth doing at some point (`:git-sha`,
+digest) — it's also the exact mechanism GitOps/ArgoCD relies on, so it may
+land naturally when Helm/ArgoCD come up rather than as its own task. Not
+currently blocking anything.
+**Cluster note:** after the session the good `created_at` image was rebuilt
+and reloaded so the node's `urlshort:local` cache matches the running code
+(the broken `/readyz` build had overwritten it). Running pods were left
+alone. `app/app.py` in the working tree has the `created_at` feature
+(uncommitted as of session end) and the *good* `/readyz`.
+**Confidence:** Confirmed (this session).
+
 ## Resource requests/limits — CPU throttling demonstrated, memory OOMKill not yet
 
 **Decision:** `k8s/urlshort-deployment.yaml` now carries both memory

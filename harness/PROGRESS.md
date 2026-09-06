@@ -66,15 +66,31 @@ summarizes status without re-deriving that history.
       events down to the `docker build` → `kind load docker-image` →
       `kubectl rollout restart` loop. Full detail across three entries in
       [EVAL_LOG.md](EVAL_LOG.md).
+- [x] Deployment rollouts (rolling update on a spec change, rollback) —
+      2026-09-06. Shipped a `created_at` feature as a rolling update;
+      watched `maxSurge: 1` / `maxUnavailable: 0` (the 25% defaults at
+      `replicas: 3`) govern the replacement, with `kubectl rollout status`
+      as the done signal. Then deliberately shipped a broken `/readyz`
+      (always 503): the rollout **wedged** (1 surge pod stuck `0/1`, old RS
+      held at `3/3`, service never blipped, `rollout status` hangs until
+      `progressDeadlineSeconds`) and `kubectl rollout undo` recovered it
+      with zero downtime. Landed: readiness probe is what gates the rollout
+      and makes "a bad image can't take the service down" real; the
+      Deployment keeps old ReplicaSets (default `revisionHistoryLimit: 10`)
+      each holding a full pod template so `undo` is just a scale-swap; and
+      `rollout undo` can't restore old code here because every revision's
+      template points at the mutable `urlshort:local` tag — needs immutable
+      refs (`:git-sha` / digest), the same discipline GitOps pipelines
+      enforce. `CHANGE-CAUSE` / `kubernetes.io/change-cause` annotation
+      also covered. See [EVAL_LOG.md](EVAL_LOG.md) (two 2026-09-06 entries).
 
 ## In progress / not started
 
 - [ ] kubectl debugging (`describe`, `logs`, events) under a real failure —
-      touched lightly (read a 500 back to a connection-refused in `logs`;
-      also the 404-on-readiness-probe episode above), not yet forced by an
-      actual crash/misconfig as its own focused exercise.
-- [ ] Deployment rollouts specifically (rolling update on a spec change,
-      rollback) — replica self-healing done, rollout behavior still open.
+      exercised again 2026-09-06 (chased a `/shorten` 500 across replicas
+      with `kubectl logs -l app=urlshort --prefix`; read a wedged rollout
+      via `describe deployment` conditions + per-pod `describe` events),
+      but still not run as its own dedicated focused exercise.
 - [ ] Service — LoadBalancer type still open (ClusterIP and NodePort done).
 - [ ] Secret — not started. Nothing in `urlshort` is actually sensitive yet
       (just `REDIS_HOST`/`REDIS_PORT`, now in a ConfigMap); would need an

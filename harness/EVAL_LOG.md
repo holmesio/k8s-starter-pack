@@ -254,3 +254,85 @@ independently. Flagged as a separate, real tradeoff worth keeping in mind:
 round-trip every second, forever, × replica count), not just a detection
 window — worth revisiting if this were headed to a real deployment rather
 than a local learning exercise.
+
+---
+
+## 2026-09-06 - `/shorten` 500 after rollout, traceback on a different replica
+
+**What broke:** Shipped a `created_at` feature (write `datetime` to Redis on
+`/shorten`, surface it in `/stats`) via the full rebuild → `kind load` →
+`kubectl rollout restart` loop. Rollout reported `successfully rolled out`,
+all 3 pods `1/1 Ready` — and `/shorten` returned HTTP 500 every call.
+**Error/symptom:** First look at `kubectl logs <pod>` showed only `/healthz`
+and `/readyz` 200s, no traceback — looked like the error wasn't being
+logged at all.
+**Diagnosis path:** The missing-traceback was a red herring caused by
+replica count. With 3 pods behind the Service, kube-proxy sent the failing
+`/shorten` call to one pod, and `kubectl logs <pod>` was tailing a
+different one that had only ever served probe traffic. `kubectl logs -l
+app=urlshort --prefix --tail=-1` (all matching pods, pod name prefixed on
+each line) surfaced the uvicorn traceback immediately. Two bugs, both in
+the new code: (1) `import datetime` then calling `datetime.now()` —
+`AttributeError`, needed `from datetime import datetime`; (2) even fixed,
+`r.set(key, datetime.now())` throws redis-py `DataError` on a raw datetime
+object — needs `str(...)` / `.isoformat()`.
+**Fix:** `from datetime import datetime` + `r.set(f"created_at:{code}",
+str(datetime.now()))`, rebuilt and re-rolled. `/stats` now returns
+`created_at`.
+**Concept this reinforced:** (1) "Rollout succeeded" ≠ "feature works" — the
+rollout only ever checks the readiness probe, which here only pinged Redis
+and never exercised `/shorten`, so a 100%-broken endpoint rolled out
+green. (2) With N replicas, `kubectl logs <single-pod>` is a coin flip for
+finding a request-specific error; `kubectl logs -l <selector> --prefix
+--tail=-1` (or `deployment/<name>`, one pod) is the move. (3) redis-py
+values must be str/bytes/int/float — it does not serialize arbitrary
+objects.
+
+---
+
+## 2026-09-06 - Wedged rollout: broken `/readyz` deploy stalls, service stays up
+
+**What we tested (deliberate break):** With the `created_at` version healthy
+on 3 replicas, shipped a version where `/readyz` always returns 503, to see
+what a rollout does when the new pods can never go Ready. Prediction under
+test (user's): that K8s terminates the 3 old pods to make room, so the new
+(broken) ones "just won't be ready."
+**What actually happened:** Exactly one new pod was created
+(`7cdcccbdfd-*`, `0/1 Running`, `Readiness probe failed: statuscode: 503`
+repeating). The old ReplicaSet stayed `3/3` Ready and untouched. `curl
+/stats/<code>` kept working throughout. `kubectl rollout status` printed
+`Waiting for deployment ... 1 out of 3 new replicas have been updated...`
+and never returned (would exit non-zero only after
+`progressDeadlineSeconds`, default 600s → `ProgressDeadlineExceeded`).
+`kubectl describe deployment` showed `Available True /
+MinimumReplicasAvailable` and `Progressing True / ReplicaSetUpdated`.
+**Why:** `replicas: 3` with the default 25% rolling-update knobs resolves to
+`maxSurge: 1` (rounds up) / `maxUnavailable: 0` (rounds down). So: at most
+4 pods total, at least 3 available at all times. The Deployment created its
+1 surge pod and then wedged — can't add a 2nd new pod (would exceed surge),
+can't kill any old pod (would breach `maxUnavailable: 0`) until the new pod
+reports Ready, which it never does. The readiness probe is the load-bearing
+piece: it's what defines "Ready" and therefore what blocks the old pods
+from being reaped.
+**Recovery:** `kubectl rollout undo deployment/urlshort-deployment` — scaled
+the broken ReplicaSet back to 0, left the old one at 3. Zero-downtime
+because the old RS's 3 pods were still running the whole time; no pod
+creation / image pull was needed.
+**The trap surfaced (not hit, but real):** every ReplicaSet in
+`rollout history` (8 revisions) has an identical pod template —
+`image: urlshort:local` in all of them, differing only by the
+`kubectl.kubernetes.io/restartedAt` annotation. `urlshort:local` is a
+mutable tag (functionally `:latest`), and `docker build` + `kind load`
+keeps overwriting what it points to. `rollout undo` faithfully restores the
+pod *template*, but the template's image reference never uniquely
+identified any code. It worked this time only because the rollback needed
+no new pods; had a fresh pod been created (higher `maxUnavailable`, waited
+out the deadline, manual `delete pod`), it would have pulled the
+now-broken bits cached under `urlshort:local` (`imagePullPolicy:
+IfNotPresent` for a non-`:latest` tag) and `rollout undo` would have
+reported success while still serving broken code. Same root cause as the
+2026-09-05 stale-image 404. Real fix is immutable image refs
+(`:git-sha` / `:1.4.2` / `@sha256:…`), which is also why GitOps pipelines
+pin a tag/digest into the manifest per build. After the session the good
+image was rebuilt and reloaded so the node's `urlshort:local` cache
+matches the running code again (pods not restarted).

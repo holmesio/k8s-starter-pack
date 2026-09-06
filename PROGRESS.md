@@ -65,16 +65,35 @@ stats) against `<node-ip>:30813` — no more port-forward needed.
       `404` in `kubectl describe` events to a stale local `urlshort:local`
       image (`imagePullPolicy: IfNotPresent` never re-pulling on its own)
       — fixed via rebuild → `kind load docker-image` → `rollout restart`.
+- [x] Deployment rollouts (rolling update on a spec change, rollback) —
+      shipped a `created_at` feature (`/shorten` writes a timestamp to
+      Redis, `/stats` returns it) as a rolling update. Watched the 25%
+      defaults resolve to `maxSurge: 1` / `maxUnavailable: 0` at
+      `replicas: 3` and govern the pod swap; `kubectl rollout status` as
+      the completion signal; `rollout history` + old ReplicaSets (default
+      `revisionHistoryLimit: 10`) as the rollback substrate. Then
+      deliberately shipped a broken `/readyz` (always 503): the rollout
+      **wedged** — one surge pod stuck `0/1`, old ReplicaSet held at
+      `3/3`, `curl /stats` never blipped, `rollout status` hangs until
+      `progressDeadlineSeconds` (600s) → `ProgressDeadlineExceeded`.
+      `kubectl rollout undo` recovered it with zero downtime. Landed: the
+      readiness probe is what gates the rollout and makes "a bad image
+      can't take the service down" a real guarantee; and `rollout undo`
+      can't actually restore old *code* here because every revision's pod
+      template names the same mutable `urlshort:local` tag — that needs
+      immutable image refs (`:git-sha`, digest), which is also the exact
+      mechanism GitOps/ArgoCD leans on. `kubernetes.io/change-cause`
+      annotation covered too.
 
 ## Concepts — still open
 
 - [ ] kubectl debugging (`describe`, `logs`, events) under a real failure —
-      touched on lightly (read a 500 back to a connection-refused in
-      `logs`; also used `describe`/`exec env` to chase the ConfigMap typo
-      below; also the stale-image 404-on-readiness episode), not yet
-      forced by an actual crash/misconfig as its own focused exercise
-- [ ] Deployment rollouts specifically (rolling update on a spec change,
-      rollback) — replica self-healing done, rollout behavior still open
+      touched on repeatedly (a 500 back to connection-refused in `logs`;
+      `describe`/`exec env` for the ConfigMap typo; the stale-image 404;
+      2026-09-06 chased a `/shorten` 500 across 3 replicas with `kubectl
+      logs -l app=urlshort --prefix` and read a wedged rollout via
+      `describe deployment` conditions), not yet forced by an actual
+      crash/misconfig as its own dedicated exercise
 - [ ] Service — ClusterIP and NodePort both done; LoadBalancer still open
 - [ ] Secret
 - [ ] In-cluster DNS / service discovery
@@ -131,3 +150,21 @@ stats) against `<node-ip>:30813` — no more port-forward needed.
   requests/limits + health probes phase now complete. Next planned: pick
   from kubectl-debugging-as-its-own-exercise, Deployment rollouts, Secret,
   or LoadBalancer Service.
+- 2026-09-06 — Deployment rollouts. Shipped a `created_at` feature as a
+  rolling update; debugged a `/shorten` 500 that rolled out green (readiness
+  only checked Redis, never `/shorten`) — traceback was on a different
+  replica, found via `kubectl logs -l app=urlshort --prefix --tail=-1`;
+  two bugs (`import datetime` vs `from datetime import datetime`, and
+  redis-py won't serialize a raw datetime). Then deliberately broke
+  `/readyz` (always 503) and watched the rollout **wedge**: `maxSurge: 1` /
+  `maxUnavailable: 0` (25% defaults at 3 replicas) → one surge pod stuck
+  `0/1`, old ReplicaSet pinned at `3/3`, service never went down, `rollout
+  status` hangs toward `progressDeadlineSeconds`. `kubectl rollout undo`
+  recovered zero-downtime. Surfaced the mutable-`urlshort:local`-tag
+  landmine (2nd time it's bitten): `rollout undo` restores the pod template
+  but every revision's template points at the same moving tag, so it can't
+  restore old code — real fix is immutable refs / digests, the same thing
+  GitOps pins per build. Rebuilt+reloaded the good image post-session so the
+  node cache isn't left holding broken bits. `app/app.py` has the
+  `created_at` change uncommitted. Next planned: Secret, LoadBalancer
+  Service, multi-service DNS/discovery, or start observability.
