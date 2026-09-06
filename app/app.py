@@ -2,6 +2,7 @@ import os
 import random
 import string
 import time
+from datetime import datetime
 
 import redis
 from fastapi import FastAPI, HTTPException, Request
@@ -42,6 +43,7 @@ def shorten(url: str):
     code = generate_code()
     r.set(f"url:{code}", url)
     r.set(f"clicks:{code}", 0)
+    r.set(f"created_at:{code}", str(datetime.now()))
     return {"code": code, "short_url": f"/{code}"}
 
 
@@ -51,7 +53,8 @@ def stats(code: str):
     if url is None:
         raise HTTPException(status_code=404, detail="unknown code")
     clicks = r.get(f"clicks:{code}")
-    return {"code": code, "url": url, "clicks": int(clicks or 0)}
+    created_at = r.get(f"created_at:{code}")
+    return {"code": code, "url": url, "clicks": int(clicks or 0), "created_at": created_at}
 
 
 @app.get("/healthz")
